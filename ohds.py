@@ -200,16 +200,15 @@ class MDS:
     def __insert_dirinfo(self, path, dir=False):
         if path == '/':
             return 
-        
-        parent = os.path.split(path)[0]
+
+        parent = os.path.dirname(path)
         assert parent != None
 
         if not self.exists(parent):
-            ## cash to md
             _md = self.secondary.getmd(parent)
             assert _md != None
             self.regmd(parent, _md)
-        
+
         md = self.ds.get(parent)
         assert md != None
 
@@ -219,23 +218,6 @@ class MDS:
 
         self.ds.set(parent, md)
         
-    def __insert_dirinfo0(self, path, dir=False):
-        if path == '/':
-            return
-
-        parent = os.path.split(path)[0]
-        md = self.ds.get(parent)
-        if md == None:
-            self.__insert_dirinfo(parent)
-            md = self.ds.get(parent)
-        assert md != None
-
-        md['children'].append(path)
-        if dir==True:
-            md['st_nlink'] += 1
-
-        self.ds.set(parent, md)
-
     def __extract_dirinfo(self, path, dir=False):
         parent = os.path.split(path)[0]
         st = self.ds.get(parent)
@@ -246,18 +228,22 @@ class MDS:
 
         self.ds.set(parent, st)
 
-    def mkmd(self, path, st_mode, st_nlink, children=[], locations= [], dir=False):
+    def mkmd(self, path, st_mode, st_nlink, locations= [], dir=False):
         now = time.time()
         md = dict(st_mode=st_mode, st_nlink=st_nlink, st_size=0,
                   st_ctime=now, st_mtime=now, st_atime=now,
                   st_uid=os.getuid(), st_gid=os.getgid(), 
-                  children = children, locations = locations)
+                  children = [], locations = locations)
         self.ds.set(path, md) 
 
-        if path == '/':
-            return
-        
-        self.__insert_dirinfo(path, dir)
+        md = self.getmd('/')
+        if not path == '/':
+            self.__insert_dirinfo(path, dir)
+
+        md = self.getmd('/')
+
+        return
+
 
     def rmmd(self, path, dir=False):
         self.ds.delete(path)
@@ -410,7 +396,6 @@ class OHDS(LoggingMixIn, Operations):
 
     def read(self, path, size, offset, fh):
         scr = self.open_files[fh.fh]
-        print self.open_files
         with self.rwlock:
             return scr.read(size, offset, fh.fh)
 
