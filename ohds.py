@@ -403,9 +403,9 @@ class OHDS(LoggingMixIn, Operations):
         return 0
 
     def read(self, path, size, offset, fh):
-        scr = self.open_files[fh.fh]
-        #with self.rwlock:
-        return scr.read(size, offset, fh.fh)
+        with self.rwlock:
+            scr = self.open_files[fh.fh]
+            return scr.read(size, offset, fh.fh)
 
     def readdir(self, path, fh):
         files = []
@@ -488,13 +488,14 @@ class OHDS(LoggingMixIn, Operations):
 
 
     def write(self, path, data, offset, fh):
-        scr = self.open_files[fh.fh]
-        #with self.rwlock:
-        size = scr.write(data, offset, fh.fh)
-        md = self.mds.getmd(path)
-        md['st_size'] += size
-        self.mds.setmd(path, md)
-        return size
+        with self.rwlock:
+            scr = self.open_files[fh.fh]
+
+            size = scr.write(data, offset, fh.fh)
+            md = self.mds.getmd(path)
+            md['st_size'] += size
+            self.mds.setmd(path, md)
+            return size
 
 if __name__ == "__main__":
 
