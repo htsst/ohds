@@ -463,8 +463,12 @@ class OHDS(LoggingMixIn, Operations):
         return rv
 
     def truncate(self, path, length, fh=None):
-        scr = self.mds.schedule(path)
-        scr.truncate(path, length, fh)
+        with self.rwlock:
+            scr = self.mds.schedule(path)
+            scr.truncate(path, length, fh)
+            md = self.mds.getmd(path)
+            md['st_size'] = length
+            self.mds.setmd(path, md)
 
     def unlink(self, path):
         if not self.mds.exists(path):
