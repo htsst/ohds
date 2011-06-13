@@ -3,6 +3,7 @@
 from __future__ import with_statement
 
 import os
+import socket
 import shutil
 import stat
 import time
@@ -254,9 +255,6 @@ class MDS:
         self.ds.set(path, md)
         self.__insert_dirinfo(path)
 
-    def schedule(self, path):
-        return self.scratches['d0']
-
     def setmd(self, path, md):
         self.ds.set(path, md)
 
@@ -295,8 +293,8 @@ class MDS:
             return md['children']
 
     def schedule(self, path):
-        ## FIXME
-        return self.getscr("d0")
+        hostname = list(self.scratches)[0]
+        return self.getscr(hostname)
 
 class OHDS(LoggingMixIn, Operations):
 
@@ -316,10 +314,6 @@ class OHDS(LoggingMixIn, Operations):
             self.mds.mkmd('/', (stat.S_IFDIR | 0755), 2)
 
         self.open_files = {}
-
-#    def __getscr(self):
-        ## TENTATIVE
-#        return self.mds.getscr("d0")
 
 #    def access(self, path, mode):
 #        localpath = self.localpath(path)
@@ -391,8 +385,7 @@ class OHDS(LoggingMixIn, Operations):
     def opendir(self, path):
         ## TODO: Scheduling
         if not self.mds.exists(path):
-            ## FIXME
-            scr = self.mds.getscr("d0")
+            scr = self.mds.schedule(path)
             if not scr.exists(path):
                 basepath = self.secondary.path(path)
                 scr.cachetree(basepath, path)
@@ -502,6 +495,7 @@ if __name__ == "__main__":
     if len(argv) != 3:
         print 'usage: %s <root> <mountpoint>' % argv[0]
         exit(1)
-
-    config = [("d0", "/tmp/ohds")]
+        
+    hostname = socket.gethostname()
+    config = [(hostname, "/tmp/ohds")]
     fuse = FUSE(OHDS(argv[1], config), argv[2], raw_fi=True, foreground=True)
