@@ -55,7 +55,8 @@ class DataStore:
 
 class IOStat:
     
-    def __init__(self):
+    def __init__(self, prefix = None):
+        self.prefix = prefix
         self.n_open = 0
         self.n_close = 0
         self.n_unlink = 0
@@ -70,6 +71,26 @@ class IOStat:
         self.n_read = 0
         self.n_write = 0
 
+    def __str__(self):
+        stat  = """
+STORAGE, %s,
+open, %d,
+close, %d,
+unlink, %d,
+mkdir, %d,
+rmdir, %d,
+rename, %d,
+getxattr, %d,
+statfs, %d,
+create, %d,
+setattr, %d,
+getattr, %d,
+read, %d,
+write, %d,
+        """ % (self.prefix, self.n_open, self.n_close, self.n_unlink, self.n_mkdir, self.n_rmdir, self.n_rename, self.n_getxattr, self.n_statfs, 
+               self.n_create, self.n_setattr, self.n_getattr, self.n_read, self.n_write)
+        return stat
+        
 
 class SecondaryFS:
 
@@ -77,7 +98,7 @@ class SecondaryFS:
         self.mnt = os.path.abspath(mnt)
         print self.mnt
         
-        self.iostat = IOStat()
+        self.iostat = IOStat("SecondaryFS")
 
     def path(self, path):
         _path = None
@@ -119,6 +140,7 @@ class SecondaryFS:
 
     def rmdir(self, path):
         _path = self.path(path)
+        self.iostat.n_rmdir += 1
         return os.rmdir(_path)
 
     def symlink(self, path, source):
@@ -142,20 +164,50 @@ class Scratch:
 
         self.rwlock = Lock()
 
-        self.iostat = IOStat()
+        self.iostat = IOStat(hostname)
 
-    def cache(self, src, dst):
+    def cache(self, src, dst, secondary = None):
         _dst = self.path(dst)
         dir = os.path.dirname(_dst)
+        self.iostat.n_statfs += 1
         if not os.path.exists(dir):
+            self.iostat.n_mkdir +=1
             os.makedirs(dir)
-        shutil.copy2(src, _dst)
+
+        # shutil.copy2(src, _dst)
+
+        try:
+            secondary.iostat.n_open += 1
+            src_fd = os.open(src, os.O_RDONLY)
+            self.iostat.n_open += 1
+            dst_fd = os.open(_dst, os.O_WRONLY | os.O_CREAT)
+
+            while 1:
+                secondary.iostat.n_read += 1
+                buf = os.read(src_fd, 4096)
+                if len(buf) == 0:
+                    break
+                self.iostat.n_write += 1
+                os.write(dst_fd, buf)
+        finally:
+            secondary.iostat.n_close +=1
+            os.close(src_fd)
+            self.iostat.n_close += 1
+            os.close(dst_fd)
+
+            secondary.iostat.n_statfs += 1
+            st = os.stat(src)
+            mode = stat.S_IMODE(st.st_mode)
+
+            os.utime(_dst, (st.st_atime, st.st_mtime))
+            os.chmod(_dst, mode)
+
         return self.getmd(dst)
 
-    def cachetree(self, src, dst):
-        _dst = self.path(dst)
-        shutil.copytree(src, _dst)
-        return self.getmd(dst)
+    def makedirs(self, path):
+        _path = self.path(path)
+        self.iostat.n_mkdir += 1
+        os.makedirs(_path)
 
     def close(self, fd):
         self.iostat.n_close += 1
@@ -276,21 +328,18 @@ class MDS:
             md['st_nlink'] += 1
 
         self.ds.set(parent, md)
-
-    def __setmd(self, path, md):
-        self.ds.set(path, md)
         
     def chmod(self, path, mode):
         md = self.getmd(path)
         md['st_mode'] &= 0770000
         md['st_mode'] |= mode
-        self.__setmd(path, md)
+        self.setmd(path, md)
         return 0
 
     def chown(self, path, uid, gid):
         md = self.getmd(path)
         md['st_uid'], md['st_gid'] = uid, gid
-        self.__setmd(path, md)
+        self.setmd(path, md)
 
     def exists(self, path):
         if not self.ds.get(path) == None:
@@ -309,7 +358,7 @@ class MDS:
         md = self.getmd(path)
         assert md != None
         md['st_size'] += size
-        self.__setmd(path, md)
+        self.setmd(path, md)
 
     def locations(self, path):
         md = self.ds.get(path)
@@ -352,10 +401,13 @@ class MDS:
         location = list(self.scratches)[0]
         return self.scratches[location]
 
+    def setmd(self, path, md):
+        self.ds.set(path, md)
+
     def truncate_size(self, path, size):
         md = self.getmd(path)
         md['st_size'] = size
-        self.__setmd(path, md)
+        self.setmd(path, md)
 
 class OHDS(LoggingMixIn, Operations):
 
@@ -400,6 +452,12 @@ class OHDS(LoggingMixIn, Operations):
 
         return 0
 
+    def destroy(self, private_data):
+        print self.secondary.iostat
+
+        for scr in self.mds.scratches.values():
+            print scr.iostat
+
     def flush(self, path, fh):
         scr = self.open_files[fh.fh]
         scr.flush(fh.fh)
@@ -427,7 +485,7 @@ class OHDS(LoggingMixIn, Operations):
 
         if not self.mds.exists(path):
             _path = self.secondary.path(path)
-            md = scr.cache(_path, path)
+            md = scr.cache(_path, path, self.secondary)
             md['locations'].append(scr.hostname)
             self.mds.regmd(path, md)
 
@@ -443,7 +501,7 @@ class OHDS(LoggingMixIn, Operations):
             scr = self.mds.schedule(path)
             if not scr.exists(path):
                 basepath = self.secondary.path(path)
-                scr.cachetree(basepath, path)
+                scr.makedirs(path)
 
             md = self.secondary.getmd(path)
             self.mds.regmd(path, md)
