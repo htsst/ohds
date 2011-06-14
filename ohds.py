@@ -28,7 +28,6 @@ class DataStore:
     def set(self, path, md):
         # self.store.set(path, metadata)
         print "SET %s, " % path,
-        print md
         self.store[path] = md
 
     def delete(self, path):
@@ -184,7 +183,7 @@ class Scratch:
 
             while 1:
                 secondary.iostat.n_read += 1
-                buf = os.read(src_fd, 4096)
+                buf = os.read(src_fd, 1048576)
                 if len(buf) == 0:
                     break
                 self.iostat.n_write += 1
@@ -298,6 +297,8 @@ class MDS:
             hostname, path = c[0], c[1]
             self.scratches[hostname]= Scratch(hostname, path)
 
+        self.iostat = IOStat("MDS")
+
     def __extract_dirinfo(self, path, dir=False):
         parent = os.path.split(path)[0]
         st = self.ds.get(parent)
@@ -342,6 +343,7 @@ class MDS:
         self.setmd(path, md)
 
     def exists(self, path):
+        self.iostat.n_statfs += 1
         if not self.ds.get(path) == None:
             return True
         return False
@@ -352,6 +354,7 @@ class MDS:
         return md['children']
 
     def getmd(self, path):
+        self.iostat.n_statfs += 1
         return self.ds.get(path)
 
     def increment_size(self, path, size):
@@ -453,6 +456,8 @@ class OHDS(LoggingMixIn, Operations):
         return 0
 
     def destroy(self, private_data):
+        print self.mds.iostat
+
         print self.secondary.iostat
 
         for scr in self.mds.scratches.values():
