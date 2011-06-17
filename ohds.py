@@ -20,34 +20,40 @@ class DataStore:
 
     def __init__(self):
         self.store = {}
+        self.lock = Lock()
 
     def get(self, path):
         print "GET %s " % path
-        return self.store.get(path)
+        c = None
+        with self.lock:
+            c = self.store.get(path)
+        return c
 
     def set(self, path, md):
         # self.store.set(path, metadata)
         print "SET %s, " % path,
-        self.store[path] = md
+        with self.lock:
+            self.store[path] = md
 
     def delete(self, path):
-        self.store.pop(path)
+        with self.lock:
+            self.store.pop(path)
 
 #class Memcached:
-#
+
 #    def __init__(self):
 #        self.store = memcache.Client(['172.16.14.129:11211'], debug=1)
 #        self.store.flush_all()
-#
+
 #    def get(self, path):
 #        print "GET %s " % path
 #        return self.store.get(path)
-#
+
 #    def set(self, path, md):
 #        print "SET %s, " % path,
 #        print md
 #        self.store.set(path, md)
-#
+
 #    def delete(self, path):
 #        self.store.delete(path)
 
@@ -225,6 +231,7 @@ class Scratch:
         self.iostat.n_close += 1
         return os.close(os.dup(fd))
 
+
     def fsync(self, fd):
         return os.fsync(fd)
 
@@ -244,7 +251,7 @@ class Scratch:
     def mkdir(self, path, mode):
         self.iostat.n_mkdir += 1
         _path = self.path(path)
-        os.mkdir(_path, mode)
+        return os.mkdir(_path, mode)
 
     def open(self, path, flags, mode=0777):
         self.iostat.n_open += 1
@@ -256,9 +263,11 @@ class Scratch:
 
     def read(self, size, offset, fd):
         self.iostat.n_read += 1
+        rv = 0
         with self.rwlock:
             os.lseek(fd, offset, 0)
-            return os.read(fd,size)
+            rv = os.read(fd,size)
+        return rv
 
     def rename(self, old, new):
         self.iostat.n_rename += 1
@@ -272,6 +281,7 @@ class Scratch:
 
     def truncate(self, path, length, fh=None):
         _path = self.path(path)
+        #with
         with open(_path, 'r+') as f:
             f.truncate(length)
 
@@ -282,9 +292,11 @@ class Scratch:
 
     def write(self, data, offset, fd):
         self.iostat.n_write += 1
+        rv = 0
         with self.rwlock:
             os.lseek(fd, offset, 0)
-            return os.write(fd, data)
+            rv = os.write(fd, data)
+        return rv
 
 class MDS:
 
@@ -423,7 +435,7 @@ class OHDS(LoggingMixIn, Operations):
         self.rwlock = Lock()
 
         ds = DataStore()
-        #ds = Memcached()
+#        ds = Memcached()
         self.mds = MDS(base, config, ds)
         self.secondary = self.mds.secondary
 
@@ -432,7 +444,11 @@ class OHDS(LoggingMixIn, Operations):
         if not self.mds.exists('/'):
             self.mds.mkmd('/', (stat.S_IFDIR | 0755), 2)
 
-        self.open_files = {}
+        # self.open_files = {}
+        self.open_files =  self.mds.scratches.values()[0]
+
+    def __getscr(self, fd=None):
+        return self.mds.scratches.values()[0]
 
 #    def access(self, path, mode):
 #        localpath = self.localpath(path)
@@ -454,7 +470,8 @@ class OHDS(LoggingMixIn, Operations):
         scr = self.mds.schedule(path)
         fd = scr.open(path, fi.flags, mode) 
         fi.fh  = fd
-        self.open_files[fd] = scr
+
+        scr = self.__getscr(fd)
 
         loc = scr.hostname
         self.mds.mkmd(path, (stat.S_IFREG | mode), 1, locations = [loc])
@@ -472,12 +489,13 @@ class OHDS(LoggingMixIn, Operations):
     def flush(self, path, fh):
         self.mds.iostat.n_close += 1
 
-        scr = self.open_files[fh.fh]
-        scr.flush(fh.fh)
+        scr = self.__getscr(fh.fh)
         #del self.open_files[fh.fh]
+        return scr.flush(fh.fh)
+
 
     def fsync(self, path, datasync, fh):
-        scr = self.open_files[fh.fh]
+        scr = self.__getscr(fh.fh)
         return scr.fsync(fh.fh)
 
     def getattr(self, path, fh=None):
@@ -510,7 +528,9 @@ class OHDS(LoggingMixIn, Operations):
 
         fd = scr.open(path, fi.flags)
         fi.fh = fd
-        self.open_files[fd] = scr
+
+#        with self.rwlock:
+#            self.open_files[fd] = scr
 
         return 0
 
@@ -530,10 +550,8 @@ class OHDS(LoggingMixIn, Operations):
 
     def read(self, path, size, offset, fh):
         self.mds.iostat.n_read += 1
-
-        with self.rwlock:
-            scr = self.open_files[fh.fh]
-            return scr.read(size, offset, fh.fh)
+        scr = self.__getscr(fh.fh)
+        return scr.read(size, offset, fh.fh)
 
     def readdir(self, path, fh):
         files = []
@@ -567,9 +585,10 @@ class OHDS(LoggingMixIn, Operations):
     def release(self, path, fh):
         self.mds.iostat.n_close += 1
 
-        scr = self.open_files[fh.fh]
+        scr = self.__getscr(fh.fh)
         scr.close(fh.fh)
-        del self.open_files[fh.fh]
+
+        return 0
 
     def rename(self, old, new):
         self.mds.iostat.n_rename += 1
@@ -625,11 +644,10 @@ class OHDS(LoggingMixIn, Operations):
     def write(self, path, data, offset, fh):
         self.mds.iostat.n_write += 1
 
-        with self.rwlock:
-            scr = self.open_files[fh.fh]
-            size = scr.write(data, offset, fh.fh)
-            self.mds.increment_size(path, size)
-            return size
+        scr = self.__getscr(fh.fh)
+        size = scr.write(data, offset, fh.fh)
+        self.mds.increment_size(path, size)
+        return size
 
 if __name__ == "__main__":
 
